@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-set REPO_URL=__REPO_URL__
+set REPO_URL=https://github.com/Nicholas-S1/F1-AI.git
 
 echo === F1 AI environment setup ===
 
@@ -50,9 +50,9 @@ if not exist .git (
   git init -b main
   git add .
   git commit -m "Initial project setup: venv, pygame, VS Code settings"
-  git remote add origin %REPO_URL%
-  git push -u origin main
 )
+git remote get-url origin >nul 2>&1 || git remote add origin %REPO_URL%
+git push -u origin main
 
 :done
 echo.
