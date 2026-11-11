@@ -16,19 +16,39 @@ for i in range(len(POINTS)):
 TRACK_LENGTH = DISTANCES[-1]
 
 
-def get_track_position(position):
+def get_track_position(position, hint=None, window=15):
     """
     Return how far along the track centerline
     the car currently is, in pixels.
+
+    If `hint` (a segment index from a previous call)
+    is given, only nearby segments are searched,
+    which is much faster.
     """
+    return _locate(position, hint, window)[0]
+
+
+def _locate(position, hint=None, window=15):
+    """Return (track_position, nearest_segment_index)."""
     p = pygame.Vector2(position)
 
     nearest_distance = float("inf")
     track_position = 0.0
+    nearest_index = 0
 
-    for i in range(len(POINTS)):
+    count = len(POINTS)
+
+    if hint is None:
+        indices = range(count)
+    else:
+        indices = (
+            (hint + offset) % count
+            for offset in range(-window, window + 1)
+        )
+
+    for i in indices:
         a = POINTS[i]
-        b = POINTS[(i + 1) % len(POINTS)]
+        b = POINTS[(i + 1) % count]
 
         segment = b - a
         length_sq = segment.length_squared()
@@ -46,12 +66,13 @@ def get_track_position(position):
 
         if distance_sq < nearest_distance:
             nearest_distance = distance_sq
+            nearest_index = i
 
             track_position = (
                 DISTANCES[i] + t * segment.length()
             )
 
-    return track_position
+    return track_position, nearest_index
 
 
 class ProgressTracker:
@@ -59,11 +80,19 @@ class ProgressTracker:
         self.reset(position)
 
     def reset(self, position):
-        self.previous = get_track_position(position)
+        self.previous, self.segment = _locate(position)
+
+        # Distance driven along the track since the start
+        # (can go negative if the car drives backwards).
+        # Summing small steps avoids the 0% / 100% mix-up
+        # right at the start/finish line.
+        self.travelled = 0.0
         self.farthest = 0.0
 
     def update(self, position, movement_distance):
-        current = get_track_position(position)
+        current, self.segment = _locate(
+            position, hint=self.segment
+        )
 
         delta = current - self.previous
 
@@ -78,13 +107,14 @@ class ProgressTracker:
             return 0.0, 0.0
 
         self.previous = current
+        self.travelled += delta
 
         # Record the farthest position reached
         old_farthest = self.farthest
 
         self.farthest = max(
             self.farthest,
-            current
+            self.travelled
         )
 
         new_progress = max(

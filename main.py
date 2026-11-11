@@ -1,5 +1,6 @@
 
 import math
+import time
 from collections import deque
 
 import pygame
@@ -31,7 +32,27 @@ pygame.display.set_caption("F1 AI Learning Simulator")
 clock = pygame.time.Clock()
 font = pygame.font.SysFont("Arial", 20, bold=True)
 
+# Draw the static track once instead of every frame
+background = pygame.Surface((WIDTH, HEIGHT))
+background.fill((125, 148, 164))
+draw_track(background)
+
 DECISION_INTERVAL = 0.1
+
+# Fixed physics step (seconds of simulated time per step)
+SIM_DT = 1 / 60
+
+# Simulation steps per frame, chosen with keys 1-6.
+# 1 = real time, 200 = up to 200x faster.
+SPEED_LEVELS = [1, 5, 20, 50, 100, 200]
+
+# Max real time to spend simulating per frame
+FRAME_BUDGET = 1 / 60 * 0.85
+
+# Exploration (epsilon) shrinks by this factor after
+# every attempt, down to MIN_EPSILON
+EPSILON_DECAY = 0.995
+MIN_EPSILON = 0.05
 
 
 # ==========================================
@@ -60,6 +81,8 @@ checkpoint_distances = [
 
 running = True
 paused = False
+speed_index = 0
+steps_done_last_frame = 0
 confirm_reset = False
 status_message = ""
 
@@ -157,12 +180,177 @@ def observe_car(car):
 
 
 # ==========================================
+# ONE TRAINING STEP
+# ==========================================
+
+def training_step(dt):
+    global decision_state, current_action
+    global decision_timer, accumulated_reward
+    global last_reward, learning_updates
+    global current_progress, rewarded_distance
+    global best_progress, average_progress
+
+
+    # STEP 1: Observe and choose action
+    if decision_state is None:
+
+        decision_state = observe_car(car)
+
+        current_action = agent.choose_action(
+            decision_state
+        )
+
+        car.apply_action(current_action)
+
+        decision_timer = 0.0
+        accumulated_reward = 0.0
+
+    # STEP 2: Move the car
+    old_position = car.position.copy()
+
+    result = car.update(dt)
+
+    decision_timer += dt
+
+    # STEP 3: Calculate reward
+    reward = -0.1 * dt
+
+    if result not in (
+        "crash",
+        "finish",
+        "timeout"
+    ):
+
+        movement_distance = (
+            car.position - old_position
+        ).length()
+
+        new_progress, current_progress = (
+            progress.update(
+                car.position,
+                movement_distance
+            )
+        )
+
+        # Limit reward to valid checkpoint region
+        if car.next_checkpoint < len(CHECKPOINTS):
+            allowed_distance = checkpoint_distances[
+                car.next_checkpoint
+            ]
+        else:
+            allowed_distance = TRACK_LENGTH
+
+        valid_distance = min(
+            progress.farthest,
+            allowed_distance
+        )
+
+        rewardable_progress = max(
+            0.0,
+            valid_distance - rewarded_distance
+        )
+
+        reward += rewardable_progress * 0.2
+
+        rewarded_distance = max(
+            rewarded_distance,
+            valid_distance
+        )
+
+        best_progress = max(
+            best_progress,
+            current_progress
+        )
+
+    if result == "checkpoint":
+        reward += 25
+
+    elif result == "crash":
+        reward -= 40
+
+    elif result == "finish":
+        reward += 200
+
+        if car.last_lap is not None:
+            reward += 100 / max(
+                car.last_lap, 1
+            )
+
+    elif result == "timeout":
+        reward -= 15
+
+    accumulated_reward += reward
+
+    # STEP 4: Detect terminal event
+    done = result in (
+        "crash",
+        "finish",
+        "timeout"
+    )
+
+    # STEP 5: Q-learning update
+    if decision_timer >= DECISION_INTERVAL or done:
+
+        next_state = observe_car(car)
+
+        agent.learn(
+            decision_state,
+            current_action,
+            accumulated_reward,
+            next_state,
+            done=done
+        )
+
+        last_reward = accumulated_reward
+        learning_updates += 1
+
+        decision_state = None
+        decision_timer = 0.0
+        accumulated_reward = 0.0
+
+    # STEP 6: Record completed attempt
+    if done:
+
+        attempt_progress = min(
+            100.0,
+            progress.farthest / TRACK_LENGTH * 100
+        )
+
+        if result == "finish":
+            attempt_progress = 100.0
+
+        recent_progress.append(attempt_progress)
+
+        average_progress = (
+            sum(recent_progress) /
+            len(recent_progress)
+        )
+
+        best_progress = max(
+            best_progress,
+            attempt_progress
+        )
+
+        # Car.update() already reset the car
+        progress.reset(car.position)
+
+        current_progress = 0.0
+        rewarded_distance = 0.0
+
+        # Gradually reduce random exploration
+        agent.epsilon = max(
+            0.05,
+            agent.epsilon * 0.999
+        )
+
+
+# ==========================================
 # MAIN SIMULATION LOOP
 # ==========================================
 
 while running:
 
-    dt = min(clock.tick(60) / 1000.0, 0.05)
+    clock.tick(60)
 
     # --------------------------------------
     # HANDLE KEYBOARD INPUT
@@ -223,6 +411,13 @@ while running:
             elif event.key == pygame.K_r:
                 paused = False
 
+            # SIMULATION SPEED (keys 1-6)
+            elif pygame.K_1 <= event.key < pygame.K_1 + len(SPEED_LEVELS):
+                speed_index = event.key - pygame.K_1
+                status_message = (
+                    f"Speed x{SPEED_LEVELS[speed_index]}"
+                )
+
             # SAVE MEMORY
             elif event.key == pygame.K_s:
                 paused = True
@@ -272,170 +467,31 @@ while running:
 
 
     # --------------------------------------
-    # AI TRAINING
+    # AI TRAINING (possibly many steps per frame)
     # --------------------------------------
 
     if not paused and not confirm_reset and running:
 
-        # STEP 1: Observe and choose action
-        if decision_state is None:
+        steps = SPEED_LEVELS[speed_index]
 
-            decision_state = observe_car(car)
+        # Stop early if the frame is taking too long so
+        # the window stays responsive at high speeds
+        deadline = time.perf_counter() + FRAME_BUDGET
+        steps_done_last_frame = 0
 
-            current_action = agent.choose_action(
-                decision_state
-            )
+        for _ in range(steps):
+            training_step(SIM_DT)
+            steps_done_last_frame += 1
 
-            car.apply_action(current_action)
-
-            decision_timer = 0.0
-            accumulated_reward = 0.0
-
-        # STEP 2: Move the car
-        old_position = car.position.copy()
-
-        result = car.update(dt)
-
-        decision_timer += dt
-
-        # STEP 3: Calculate reward
-        reward = -0.1 * dt
-
-        if result not in (
-            "crash",
-            "finish",
-            "timeout"
-        ):
-
-            movement_distance = (
-                car.position - old_position
-            ).length()
-
-            new_progress, current_progress = (
-                progress.update(
-                    car.position,
-                    movement_distance
-                )
-            )
-
-            # Limit reward to valid checkpoint region
-            if car.next_checkpoint < len(CHECKPOINTS):
-                allowed_distance = checkpoint_distances[
-                    car.next_checkpoint
-                ]
-            else:
-                allowed_distance = TRACK_LENGTH
-
-            valid_distance = min(
-                progress.farthest,
-                allowed_distance
-            )
-
-            rewardable_progress = max(
-                0.0,
-                valid_distance - rewarded_distance
-            )
-
-            reward += rewardable_progress * 0.2
-
-            rewarded_distance = max(
-                rewarded_distance,
-                valid_distance
-            )
-
-            best_progress = max(
-                best_progress,
-                current_progress
-            )
-
-        if result == "checkpoint":
-            reward += 25
-
-        elif result == "crash":
-            reward -= 40
-
-        elif result == "finish":
-            reward += 200
-
-            if car.last_lap is not None:
-                reward += 100 / max(
-                    car.last_lap, 1
-                )
-
-        elif result == "timeout":
-            reward -= 15
-
-        accumulated_reward += reward
-
-        # STEP 4: Detect terminal event
-        done = result in (
-            "crash",
-            "finish",
-            "timeout"
-        )
-
-        # STEP 5: Q-learning update
-        if decision_timer >= DECISION_INTERVAL or done:
-
-            next_state = observe_car(car)
-
-            agent.learn(
-                decision_state,
-                current_action,
-                accumulated_reward,
-                next_state,
-                done=done
-            )
-
-            last_reward = accumulated_reward
-            learning_updates += 1
-
-            decision_state = None
-            decision_timer = 0.0
-            accumulated_reward = 0.0
-
-        # STEP 6: Record completed attempt
-        if done:
-
-            attempt_progress = min(
-                100.0,
-                progress.farthest / TRACK_LENGTH * 100
-            )
-
-            if result == "finish":
-                attempt_progress = 100.0
-
-            recent_progress.append(attempt_progress)
-
-            average_progress = (
-                sum(recent_progress) /
-                len(recent_progress)
-            )
-
-            best_progress = max(
-                best_progress,
-                attempt_progress
-            )
-
-            # Car.update() already reset the car
-            progress.reset(car.position)
-
-            current_progress = 0.0
-            rewarded_distance = 0.0
-
-            # Gradually reduce random exploration
-            agent.epsilon = max(
-                0.05,
-                agent.epsilon * 0.999
-            )
+            if time.perf_counter() > deadline:
+                break
 
     # ======================================
     # DRAW SIMULATOR
     # ======================================
 
-    screen.fill((125, 148, 164))
-
-    draw_track(screen)
+    # Track never changes, so blit the pre-drawn image
+    screen.blit(background, (0, 0))
     draw_sensors(screen, car)
     car.draw(screen)
 
@@ -458,13 +514,17 @@ while running:
         f"Lap Time: {car.lap_time:.2f}s",
         f"Best Lap: {best_time}",
         f"Speed: {car.speed:.0f}",
+        f"Sim Speed: x{SPEED_LEVELS[speed_index]} "
+        f"({clock.get_fps() * steps_done_last_frame / 60:.0f}x real)"
+        if not paused else
+        f"Sim Speed: x{SPEED_LEVELS[speed_index]}",
         f"Action: {current_action}",
         f"Last Reward: {last_reward:.2f}",
         f"Learning Rate: {agent.learning_rate:.2f}",
         f"Epsilon: {agent.epsilon:.3f}",
         f"Learned States: {len(agent.q_table)}",
         f"Q Updates: {learning_updates}",
-        "SPACE: Pause / Resume",
+        "SPACE: Pause / Resume | 1-6: Sim speed",
         "S: Save | L: Load | M: Reset",
         "ESC: Quit",
         f"Status: {status_message}",

@@ -8,6 +8,8 @@ from track import (
     TRACK_WIDTH,
     CHECKPOINTS,
     CHECKPOINT_RADIUS,
+    SAFE_MASK,
+    point_in_mask,
 )
 
 
@@ -88,16 +90,6 @@ class Car:
         self.speed = max(
             0.0,
             min(self.speed, max_speed)
-        )
-
-
-        # Acceleration
-        acceleration = 80
-        max_speed = 150
-
-        self.speed = min(
-            self.speed + acceleration * dt,
-            max_speed
         )
 
         # Steering
@@ -191,42 +183,9 @@ class Car:
         )
 
     def has_crashed(self):
-        closest = float("inf")
-        p = self.position
-
-        for i in range(len(SMOOTH_TRACK)):
-            a = pygame.Vector2(SMOOTH_TRACK[i])
-            b = pygame.Vector2(
-                SMOOTH_TRACK[
-                    (i + 1) % len(SMOOTH_TRACK)
-                ]
-            )
-
-            segment = b - a
-            length_squared = segment.length_squared()
-
-            if length_squared == 0:
-                continue
-
-            t = max(
-                0.0,
-                min(
-                    1.0,
-                    (p - a).dot(segment)
-                    / length_squared
-                )
-            )
-
-            nearest = a + segment * t
-            distance = (p - nearest).length()
-
-            closest = min(closest, distance)
-
-        car_radius = 9
-
-        return (
-            closest > TRACK_WIDTH / 2 - car_radius
-        )
+        # Crashed once the car's center leaves the safe
+        # zone (road width minus the car's radius)
+        return not point_in_mask(SAFE_MASK, self.position)
 
     def draw(self, screen):
         forward = pygame.Vector2(

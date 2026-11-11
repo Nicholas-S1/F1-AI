@@ -1,6 +1,15 @@
 
+import os
+import tempfile
+
+import memory
 from agent import QLearningAgent
 from memory import save_memory, load_memory, reset_memory
+
+# Save to a temporary folder so this test never
+# overwrites the real trained model in models/
+memory.MODEL_FOLDER = tempfile.mkdtemp()
+memory.MODEL_FILE = os.path.join(memory.MODEL_FOLDER, "f1_ai.pkl")
 
 agent = QLearningAgent()
 

@@ -83,7 +83,10 @@ SMOOTH_TRACK = generate_smooth_track()
 
 
 CHECKPOINT_COUNT = 12
-CHECKPOINT_RADIUS = 24
+# Covers the full drivable width (the car crashes
+# once it is more than TRACK_WIDTH/2 - 9 px off-center),
+# so a car can't drive past a checkpoint without hitting it
+CHECKPOINT_RADIUS = 39
 
 CHECKPOINTS = [
     SMOOTH_TRACK[
@@ -158,7 +161,15 @@ def draw_finish_line(screen):
 
 # DRAW CHECKPOINTS
 
+_label_font = None
+
+
 def draw_checkpoints(screen):
+    global _label_font
+
+    # Creating a SysFont is slow, so build it once
+    if _label_font is None:
+        _label_font = pygame.font.SysFont("Arial", 15)
 
     for i, position in enumerate(CHECKPOINTS):
 
@@ -179,9 +190,7 @@ def draw_checkpoints(screen):
         )
 
         # Label each checkpoint
-        font = pygame.font.SysFont("Arial", 15)
-
-        label = font.render(
+        label = _label_font.render(
             str(i), True, (255, 255, 255)
         )
 
@@ -280,3 +289,61 @@ def draw_track(screen):
 
     # Draw all checkpoints
     draw_checkpoints(screen)
+
+
+# ==========================================
+# PRECOMPUTED ROAD MASKS (fast lookups)
+# ==========================================
+# Checking "is this point on the road?" against every
+# track segment is slow. Instead we paint the road once
+# into a pixel mask and look points up in O(1).
+
+MASK_SIZE = (1200, 800)
+
+
+def _build_road_mask(radius):
+    """Mask of every pixel within `radius` of the centerline."""
+    surface = pygame.Surface(MASK_SIZE)
+    surface.fill((0, 0, 0))
+    color = (255, 255, 255)
+    count = len(SMOOTH_TRACK)
+
+    for i in range(count):
+        a = pygame.Vector2(SMOOTH_TRACK[i])
+        b = pygame.Vector2(SMOOTH_TRACK[(i + 1) % count])
+
+        # Round cap at each point
+        pygame.draw.circle(surface, color, (round(a.x), round(a.y)), radius)
+
+        segment = b - a
+        if segment.length_squared() == 0:
+            continue
+
+        # Rectangle covering the segment
+        normal = pygame.Vector2(-segment.y, segment.x).normalize() * radius
+        pygame.draw.polygon(
+            surface, color, [a + normal, b + normal, b - normal, a - normal]
+        )
+
+    return pygame.mask.from_threshold(
+        surface, color, (1, 1, 1, 255)
+    )
+
+
+CAR_RADIUS = 9
+
+# Whole asphalt surface (used by the sensors)
+ROAD_MASK = _build_road_mask(TRACK_WIDTH // 2)
+
+# Where the car's center can be without crashing
+SAFE_MASK = _build_road_mask(TRACK_WIDTH // 2 - CAR_RADIUS)
+
+
+def point_in_mask(mask, point):
+    x = int(point[0])
+    y = int(point[1])
+
+    if 0 <= x < MASK_SIZE[0] and 0 <= y < MASK_SIZE[1]:
+        return bool(mask.get_at((x, y)))
+
+    return False

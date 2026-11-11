@@ -2,47 +2,15 @@
 import math
 import pygame
 
-from track import SMOOTH_TRACK, TRACK_WIDTH
+from track import ROAD_MASK, point_in_mask
 
 SENSOR_ANGLES = [-70, -35, 0, 35, 70]
 MAX_DISTANCE = 150
 STEP_SIZE = 5
 
-# Cache track segments once
-SEGMENTS = [
-    (
-        pygame.Vector2(SMOOTH_TRACK[i]),
-        pygame.Vector2(
-            SMOOTH_TRACK[(i + 1) % len(SMOOTH_TRACK)]
-        )
-    )
-    for i in range(len(SMOOTH_TRACK))
-]
-
-
 def on_track(point):
     """Check whether a point is on the asphalt."""
-    p = pygame.Vector2(point)
-    radius_squared = (TRACK_WIDTH / 2) ** 2
-
-    for a, b in SEGMENTS:
-        segment = b - a
-        length_squared = segment.length_squared()
-
-        if length_squared == 0:
-            continue
-
-        t = max(
-            0.0,
-            min(1.0, (p - a).dot(segment) / length_squared)
-        )
-
-        nearest = a + segment * t
-
-        if (p - nearest).length_squared() <= radius_squared:
-            return True
-
-    return False
+    return point_in_mask(ROAD_MASK, point)
 
 
 def get_sensor_readings(car):
