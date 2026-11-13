@@ -24,6 +24,26 @@ py -m venv .venv
 pip install -r requirements.txt
 ```
 
+## Setup (macOS)
+
+pygame 2.6 has no prebuilt wheel for Python 3.14 yet, so use Python 3.13 (or 3.10–3.12). With [Homebrew](https://brew.sh):
+```
+brew install python@3.13
+git clone <repo-url>
+cd F1-AI
+python3.13 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+## Running
+
+With the venv activated, from the project folder:
+```
+python main.py
+```
+On Windows, `.venv\Scripts\activate` first; on macOS, `source .venv/bin/activate`.
+
 Adding a package: `pip install <pkg>`, then add it to `requirements.txt` so your partner gets it too.
 
 ## Team & responsibilities
