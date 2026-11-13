@@ -101,6 +101,14 @@ accumulated_reward = 0.0
 recent_progress = deque(maxlen=100)
 average_progress = 0.0
 
+# Evaluation mode: the agent always takes its best
+# known action (no random exploration) and does not
+# learn, so we can measure what it has really learned.
+eval_mode = False
+eval_attempts = 0
+eval_laps = 0
+eval_progress = deque(maxlen=100)
+
 
 # ==========================================
 # RESET CURRENT ATTEMPT
@@ -189,6 +197,7 @@ def training_step(dt):
     global last_reward, learning_updates
     global current_progress, rewarded_distance
     global best_progress, average_progress
+    global eval_attempts, eval_laps
 
 
     # STEP 1: Observe and choose action
@@ -197,7 +206,8 @@ def training_step(dt):
         decision_state = observe_car(car)
 
         current_action = agent.choose_action(
-            decision_state
+            decision_state,
+            greedy=eval_mode
         )
 
         car.apply_action(current_action)
@@ -289,20 +299,24 @@ def training_step(dt):
     )
 
     # STEP 5: Q-learning update
+    # (skipped in evaluation mode so the Q-table
+    # is not changed while we measure it)
     if decision_timer >= DECISION_INTERVAL or done:
 
-        next_state = observe_car(car)
+        if not eval_mode:
+            next_state = observe_car(car)
 
-        agent.learn(
-            decision_state,
-            current_action,
-            accumulated_reward,
-            next_state,
-            done=done
-        )
+            agent.learn(
+                decision_state,
+                current_action,
+                accumulated_reward,
+                next_state,
+                done=done
+            )
+
+            learning_updates += 1
 
         last_reward = accumulated_reward
-        learning_updates += 1
 
         decision_state = None
         decision_timer = 0.0
@@ -319,12 +333,21 @@ def training_step(dt):
         if result == "finish":
             attempt_progress = 100.0
 
-        recent_progress.append(attempt_progress)
+        if eval_mode:
+            # Keep evaluation results separate
+            # from the training statistics
+            eval_attempts += 1
+            eval_progress.append(attempt_progress)
 
-        average_progress = (
-            sum(recent_progress) /
-            len(recent_progress)
-        )
+            if result == "finish":
+                eval_laps += 1
+        else:
+            recent_progress.append(attempt_progress)
+
+            average_progress = (
+                sum(recent_progress) /
+                len(recent_progress)
+            )
 
         best_progress = max(
             best_progress,
@@ -338,10 +361,12 @@ def training_step(dt):
         rewarded_distance = 0.0
 
         # Gradually reduce random exploration
-        agent.epsilon = max(
-            0.05,
-            agent.epsilon * 0.999
-        )
+        # (only while training)
+        if not eval_mode:
+            agent.epsilon = max(
+                0.05,
+                agent.epsilon * 0.999
+            )
 
 
 # ==========================================
@@ -459,6 +484,22 @@ while running:
                     )
                     print(status_message)
 
+            # TOGGLE EVALUATION MODE
+            elif event.key == pygame.K_e:
+                eval_mode = not eval_mode
+
+                # Start a fresh attempt so the result
+                # is not mixed between the two modes
+                restart_attempt()
+
+                if eval_mode:
+                    eval_attempts = 0
+                    eval_laps = 0
+                    eval_progress.clear()
+                    status_message = "EVAL mode (no learning)"
+                else:
+                    status_message = "TRAINING mode"
+
             # REQUEST MEMORY RESET
             elif event.key == pygame.K_m:
                 paused = True
@@ -501,8 +542,20 @@ while running:
         else "--"
     )
 
+    if eval_progress:
+        eval_avg = sum(eval_progress) / len(eval_progress)
+        eval_line = (
+            f"Eval: {eval_laps}/{eval_attempts} laps, "
+            f"avg {eval_avg:.1f}%"
+        )
+    else:
+        eval_line = "Eval: no attempts yet"
+
     labels = [
+        "F1 Q-LEARNING EVALUATION"
+        if eval_mode else
         "F1 Q-LEARNING TRAINING",
+        eval_line,
         f"Attempt: {car.attempts}",
         f"Crashes: {car.crashes}",
         f"Completed Laps: {car.completed_laps}",
@@ -525,7 +578,7 @@ while running:
         f"Learned States: {len(agent.q_table)}",
         f"Q Updates: {learning_updates}",
         "SPACE: Pause / Resume | 1-6: Sim speed",
-        "S: Save | L: Load | M: Reset",
+        "S: Save | L: Load | M: Reset | E: Eval",
         "ESC: Quit",
         f"Status: {status_message}",
     ]

@@ -27,7 +27,7 @@ class QLearningAgent:
             "coast_straight"
         ]
 
-    def choose_action(self, state):
+    def choose_action(self, state, greedy=False):
         # Initialize a new state
         if state not in self.q_table:
             self.q_table[state] = {
@@ -35,7 +35,8 @@ class QLearningAgent:
             }
 
         # Exploration: random action
-        if random.random() < self.epsilon:
+        # (skipped when greedy, e.g. in evaluation mode)
+        if not greedy and random.random() < self.epsilon:
             return random.choice(self.actions)
 
         # Exploitation: highest Q-value
