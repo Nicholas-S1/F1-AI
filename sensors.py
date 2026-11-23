@@ -2,19 +2,16 @@
 import math
 import pygame
 
-from track import ROAD_MASK, point_in_mask
+from track import point_in_mask
 
 SENSOR_ANGLES = [-70, -35, 0, 35, 70]
 MAX_DISTANCE = 150
 STEP_SIZE = 5
 
-def on_track(point):
-    """Check whether a point is on the asphalt."""
-    return point_in_mask(ROAD_MASK, point)
-
 
 def get_sensor_readings(car):
     """Return five distances and their endpoints."""
+    road_mask = car.track.road_mask
     readings = []
 
     for offset in SENSOR_ANGLES:
@@ -30,7 +27,7 @@ def get_sensor_readings(car):
         while distance < MAX_DISTANCE:
             point = car.position + direction * distance
 
-            if not on_track(point):
+            if not point_in_mask(road_mask, point):
                 break
 
             distance += STEP_SIZE
